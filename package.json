@@ -8,7 +8,7 @@
   },
   "scripts": {
     "start": "node lib/app",
-    "build": "node_modules/.bin/babel src --out-dir lib"
+    "build": "node_modules/.bin/babel src --out-dir lib -w"
   },
   "dependencies": {
     "data-forge": "^0.5.6",
