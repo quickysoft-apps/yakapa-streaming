@@ -18,12 +18,12 @@ const STREAMED = `${EVENT_PREFIX}/streamed`
 const app = express().listen(3002)
 const client = new Agent.Client({	server: SERVER,	tag: TAG,	nickname: NICKNAME })
 
-const concat = (tags, extractors, selectors) => {
+const concat = (tags, jobs) => {
 	let concatenatedData
 	tags.map(tag => {
 		const rootpath = path.join(__dirname, '..', '..', 'storage', tag)
-		extractors.map(extractor => {
-			const fullpath = path.join(rootpath, `${extractor}.json`)
+		jobs.map(job => {
+			const fullpath = path.join(rootpath, `${job}.json`)
 			if (fs.existsSync(fullpath)) {
 				const data = new dataForge.readFileSync(fullpath).parseJSON()
 				concatenatedData = concatenatedData ? concatenatedData.concat(data) : data
@@ -33,19 +33,21 @@ const concat = (tags, extractors, selectors) => {
 	return concatenatedData
 }
 
-const applyQuery = (data, query) => {
-	const indexedData = data.parseDates("timestamp").setIndex("timestamp").orderBy(row => row.timestamp)
+const applyQuery = (data, query) => {	
 	switch (query.name) {
 		case 'last':
+			const indexedData = data.parseDates("timestamp").setIndex("timestamp").orderBy(row => row.timestamp)
 			return indexedData.last()
+		case 'average':
+			return data.getSeries(query.series).average()			
 		default:
 			return indexedData.last()
 	}
 }
 
-const applySelectors = (data, selectors) => {
+const applySubset = (data, subset) => {
 	const columns = data.getColumnNames()
-	const mandatorySelectors = selectors.concat(['timestamp', 'tag', 'extractor'])
+	const mandatorySelectors = selectors.concat(['timestamp', 'tag', 'job'])
 	const excludedColumns = columns.filter(column => mandatorySelectors.findIndex(column) === -1)
 	return data.dropSeries(excludedColumns)
 }
@@ -58,11 +60,23 @@ client.emitter.on('yakapa/stream', (socketMessage) => {
 	const {	message, from, date } = socketMessage
 	const decompressed = LZString.decompressFromUTF16(message)
 	Common.Logger.info('Streaming', decompressed, 'asked from', from)
-	const jsonMessage = JSON.parse(decompressed)
-	const {	name, tags,	extractors,	selectors, query } = jsonMessage
-	const concatenatedData = concat(tags, extractors, selectors)
-	const queryData = [].concat(applyQuery(concatenatedData, query))
-	const selectedData = applySelectors(new dataForge.DataFrame(queryData), selectors)			
-	const streamedMessage = {	name,	data: selectedData.toArray() }
-	client.emit(STREAMED, JSON.stringify(streamedMessage), from) 
+	
+	const {	name, tags,	jobs,	queries } = JSON.parse(decompressed)
+	const concatenatedData = concat(tags, jobs)
+	
+	queries.map(query => {		
+		const queryData = [applyQuery(concatenatedData, query)]
+		let data = new dataForge.DataFrame(queryData)
+		if (query.subset) {
+			data = data.subset(query.subset)	
+		}		
+		
+		const streamedMessage = {	
+			name,	
+			query: query.name, 
+			data: data.toArray() 
+		}
+		client.emit(STREAMED, JSON.stringify(streamedMessage), from) 
+	})
+	
 })
