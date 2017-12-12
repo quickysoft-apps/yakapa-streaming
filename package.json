@@ -12,10 +12,9 @@
     "prebuild": "node_modules/.bin/babel src --out-dir lib"
   },
   "dependencies": {
-    "data-forge": "^0.5.6",
     "events": "^1.1.1",
     "express": "^4.16.2",
-    "ki1r0y.lock": "^1.0.4",
+    "influx": "^5.0.7",
     "lz-string": "^1.4.4",
     "perfy": "^1.1.2",
     "socket.io-client": "^2.0.4",

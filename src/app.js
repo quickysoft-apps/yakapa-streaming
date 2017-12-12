@@ -1,10 +1,11 @@
 import Agent from 'yakapa-agent-client'
 import * as Common from 'yakapa-common'
 import * as LZString from 'lz-string'
-
+import { InfluxDB } from 'influx'
 import * as path from 'path'
 import * as fs from 'fs'
-import dataForge from 'data-forge'
+
+import Streaming from './streaming'
 
 import express from 'express'
 
@@ -16,67 +17,44 @@ const EVENT_PREFIX = 'yakapa'
 const STREAMED = `${EVENT_PREFIX}/streamed`
 
 const app = express().listen(3002)
-const client = new Agent.Client({	server: SERVER,	tag: TAG,	nickname: NICKNAME })
+const client = new Agent.Client({ server: SERVER, tag: TAG, nickname: NICKNAME })
 
-const concat = (tags, jobs) => {
-	let concatenatedData
-	tags.map(tag => {
-		const rootpath = path.join(__dirname, '..', '..', 'storage', tag)
-		jobs.map(job => {
-			const fullpath = path.join(rootpath, `${job}.json`)
-			if (fs.existsSync(fullpath)) {
-				const data = new dataForge.readFileSync(fullpath).parseJSON()
-				concatenatedData = concatenatedData ? concatenatedData.concat(data) : data
-			}
-		})
-	})
-	return concatenatedData
+const applyQuery = (data, query) => {
+  switch (query.name) {
+    case 'last':
+      const indexedData = data.parseDates("timestamp").setIndex("timestamp").orderBy(row => row.timestamp)
+      return indexedData.last()
+    case 'average':
+      return data.getSeries(query.series).average()
+    default:
+      return indexedData.last()
+  }
 }
 
-const applyQuery = (data, query) => {	
-	switch (query.name) {
-		case 'last':
-			const indexedData = data.parseDates("timestamp").setIndex("timestamp").orderBy(row => row.timestamp)
-			return indexedData.last()
-		case 'average':
-			return data.getSeries(query.series).average()			
-		default:
-			return indexedData.last()
-	}
-}
-
-const applySubset = (data, subset) => {
-	const columns = data.getColumnNames()
-	const mandatorySelectors = selectors.concat(['timestamp', 'tag', 'job'])
-	const excludedColumns = columns.filter(column => mandatorySelectors.findIndex(column) === -1)
-	return data.dropSeries(excludedColumns)
-}
 
 client.emitter.on('connected', () => {
-	Common.Logger.info('Streaming connecté avec le tag', client.tag)
+  Common.Logger.info('Streaming connecté avec le tag', client.tag)
 })
 
 client.emitter.on('yakapa/stream', (socketMessage) => {
-	const {	message, from, date } = socketMessage
-	const decompressed = LZString.decompressFromUTF16(message)
-	Common.Logger.info('Streaming', decompressed, 'asked from', from)
-	
-	const {	name, tags,	jobs,	queries } = JSON.parse(decompressed)
-	const concatenatedData = concat(tags, jobs)
-	
-	queries.map(query => {		
-		const queryData = [applyQuery(concatenatedData, query)]
-		let data = new dataForge.DataFrame(queryData)
-		if (query.subset) {
-			data = data.subset(query.subset)	
-		}		
-		
-		const streamedMessage = {	
-			name,	
-			query: query.name, 
-			data: data.toArray() 
-		}
-		client.emit(STREAMED, JSON.stringify(streamedMessage), from) 
-	})
-	
+  const { message, from, date } = socketMessage
+  const decompressed = LZString.decompressFromUTF16(message)
+  Common.Logger.info('Streaming', decompressed, 'asked from', from)
+
+  const { name, select, measurements, tags, where, groupby, limit } = JSON.parse(decompressed)
+  const streaming = new Streaming(name, select, measurements, tags, where, groupby, limit)
+  streaming.execute(
+    (res) => {      
+      const streamedMessage = {
+        name,
+        data: res
+      }
+      client.emit(STREAMED, JSON.stringify(streamedMessage), from)
+    },
+    (error) => {
+      Common.Logger.warn('Le streaming a échoué pour', from, error)
+    }
+  )
+
+
 })
